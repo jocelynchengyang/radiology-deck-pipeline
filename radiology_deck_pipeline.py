@@ -3,8 +3,12 @@
 radiology_deck_pipeline.py
 =========================
 
-End-to-end pipeline that turns a YouTube lecture playlist into an Anki `.apkg`
-of cloze cards, following the RadiologyTutorials / AnKore card-writing principles.
+End-to-end pipeline that turns any YouTube lecture playlist into an Anki
+`.apkg` of cloze cards, using minimum-information, one-fact-per-card writing
+principles. Deck name, tag namespace, and source line are supplied on the
+command line, so this works for any creator's playlist, not just one series;
+attribution in the card's Source field is auto-detected from the playlist's
+channel unless you override it with --channel.
 
     playlist URL
         -> download auto-captions (yt-dlp)           [download]
@@ -40,6 +44,12 @@ Examples
     python radiology_deck_pipeline.py run "URL" ./ct \\
         --deck CT --tag-ns CT --section-prefix "CT Physics" \\
         --source "CT Physics Course Lesson #{num}" --reverse
+
+    # optional: namespace every tag under a course, and/or force attribution
+    # instead of auto-detecting it from the playlist's channel
+    python radiology_deck_pipeline.py run "URL" ./ultrasound \\
+        --deck Ultrasound --tag-ns Ultrasound \\
+        --tag-root "MyCourse::Physics" --channel "My Course Name"
 
     python radiology_deck_pipeline.py batch --config decks.json
 
@@ -126,27 +136,31 @@ def _ytdlp_cmd() -> list[str]:
     return [sys.executable, "-m", "yt_dlp"]
 
 
-def list_playlist(url: str) -> list[tuple[int, str, str]]:
+def list_playlist(url: str) -> list[tuple[int, str, str, str]]:
     out = subprocess.run(
-        _ytdlp_cmd() + ["--flat-playlist", "--print", "%(playlist_index)s\t%(id)s\t%(title)s", url],
+        _ytdlp_cmd() + ["--flat-playlist", "--print",
+                        "%(playlist_index)s\t%(id)s\t%(title)s\t%(channel,uploader)s", url],
         capture_output=True, text=True, check=True,
     )
     rows = []
     for line in out.stdout.splitlines():
         if line.startswith("[") or "\t" not in line:
             continue
-        idx, vid, title = line.split("\t", 2)
-        rows.append((int(idx), vid, title))
+        idx, vid, title, channel = line.split("\t", 3)
+        rows.append((int(idx), vid, title, "" if channel == "NA" else channel))
     return rows
 
 
 def download(url: str, workdir: Path) -> None:
     workdir.mkdir(parents=True, exist_ok=True)
     print(f"[download] {url} -> {workdir}")
-    # cache playlist index -> (video id, raw title) for later steps
+    # cache playlist index -> (video id, raw title) plus the channel name,
+    # for later steps (card generation, source attribution)
+    rows = list_playlist(url)
+    playlist_cache = {str(i): [v, t] for i, v, t, _ in rows}
+    playlist_cache["__channel__"] = next((c for *_, c in rows if c), "")
     (workdir / ".playlist.json").write_text(
-        json.dumps({str(i): [v, t] for i, v, t in list_playlist(url)}),
-        encoding="utf-8")
+        json.dumps(playlist_cache), encoding="utf-8")
     subprocess.run(
         _ytdlp_cmd() + [
             "--skip-download", "--write-auto-subs", "--sub-langs", "en-orig,en",
@@ -320,12 +334,16 @@ def _extract_json_array(s: str):
 
 def generate_cards(workdir: Path, deck: str, section_prefix: str,
                    model: str = DEFAULT_MODEL, per_lecture: int = 14,
-                   reverse: bool = False, out_path: Path | None = None) -> Path:
+                   reverse: bool = False, out_path: Path | None = None,
+                   channel: str | None = None) -> Path:
     client, anthro = make_client()
     files = lecture_files(workdir)
     n = len(files)
     pl_path = workdir / ".playlist.json"
     playlist = json.loads(pl_path.read_text(encoding="utf-8")) if pl_path.exists() else {}
+    # attribution for the card's Source field: explicit --channel wins,
+    # otherwise fall back to the channel name cached by download()
+    channel = channel if channel is not None else playlist.get("__channel__", "")
     sys_prompt = CARDS_SYS.format(n_lo=max(6, per_lecture - 3), n_hi=per_lecture + 3)
     decks = []
     for i, path in enumerate(files, 1):
@@ -362,7 +380,7 @@ def generate_cards(workdir: Path, deck: str, section_prefix: str,
     decks.sort(key=lambda d: d["n"])
     out_path = out_path or (workdir.parent / f"{_slug(deck)}_cards.json")
     out_path.write_text(json.dumps(
-        {"parent_deck": deck, "note_type": "Cloze", "decks": decks},
+        {"parent_deck": deck, "note_type": "Cloze", "channel": channel, "decks": decks},
         indent=1, ensure_ascii=False), encoding="utf-8")
     total = sum(len(d["cards"]) for d in decks)
     print(f"[cards] wrote {out_path}  ({total} cards, {len(decks)} lectures)")
@@ -395,13 +413,19 @@ hr#answer{border:none;border-top:1px solid #d5dae0;margin:14px 0}
 
 
 def build_apkg(cards_json: Path, tag_ns: str, source_tpl: str,
-               num_field: str = "n", out_dir: Path | None = None) -> Path:
+               num_field: str = "n", out_dir: Path | None = None,
+               tag_root: str = "", channel: str | None = None) -> Path:
     import genanki
     data = json.loads(Path(cards_json).read_text(encoding="utf-8"))
     parent = data["parent_deck"]
+    # explicit --channel wins; otherwise use whatever generate_cards detected
+    # and stored in cards.json; empty means the Source field just quotes the
+    # lecture title with no leading attribution
+    channel = channel if channel is not None else data.get("channel", "")
+    tag_prefix = f"{tag_root}::" if tag_root else ""
     model = genanki.Model(
         _stable_id("model:" + parent),
-        f"{parent} Cloze (RadiologyTutorials)",
+        f"{parent} Cloze",
         model_type=genanki.Model.CLOZE,
         fields=[{"name": "Text"}, {"name": "Section"}, {"name": "Source"}, {"name": "Extra"}],
         templates=[{
@@ -420,7 +444,8 @@ def build_apkg(cards_json: Path, tag_ns: str, source_tpl: str,
         deck = genanki.Deck(base + d["n"], f"{parent}::{d['n']:02d} {d['title']}")
         vid = d.get("video_id") or ""
         url = f"https://www.youtube.com/watch?v={vid}" if vid else ""
-        source = f'Radiology Tutorials — "{d["title"]}" ({source_tpl.format(num=num)})'
+        title_part = f'"{d["title"]}" ({source_tpl.format(num=num)})'
+        source = f"{channel} — {title_part}" if channel else title_part
         if url:
             source += f" · {url}"
         lslug = _slug(d["title"])
@@ -428,7 +453,7 @@ def build_apkg(cards_json: Path, tag_ns: str, source_tpl: str,
             deck.add_note(genanki.Note(
                 model=model,
                 fields=[c["text"], d["section"], source, ""],
-                tags=[f"#RadiologyTutorials::Physics::{tag_ns}::{lslug}::{_slug(c['subchapter'])}"],
+                tags=[f"#{tag_prefix}{tag_ns}::{lslug}::{_slug(c['subchapter'])}"],
                 guid=genanki.guid_for(f"{tag_ns.lower()}-{d['n']:02d}-{i:03d}"),
             ))
             n_notes += 1
@@ -447,7 +472,8 @@ def build_apkg(cards_json: Path, tag_ns: str, source_tpl: str,
 def run(playlist: str, workdir: str, deck: str, tag_ns: str,
         section_prefix: str, source: str, *, reverse: bool = False,
         do_proofread: bool = False, model: str = DEFAULT_MODEL,
-        per_lecture: int = 14, skip_download: bool = False) -> None:
+        per_lecture: int = 14, skip_download: bool = False,
+        tag_root: str = "", channel: str | None = None) -> None:
     wd = Path(workdir).expanduser().resolve()
     if not skip_download:
         download(playlist, wd)
@@ -455,8 +481,10 @@ def run(playlist: str, workdir: str, deck: str, tag_ns: str,
         proofread(wd, model=model)
     cards_path = wd.parent / f"{_slug(deck)}_cards.json"
     generate_cards(wd, deck, section_prefix, model=model,
-                   per_lecture=per_lecture, reverse=reverse, out_path=cards_path)
-    build_apkg(cards_path, tag_ns, source, num_field="n", out_dir=wd.parent)
+                   per_lecture=per_lecture, reverse=reverse, out_path=cards_path,
+                   channel=channel)
+    build_apkg(cards_path, tag_ns, source, num_field="n", out_dir=wd.parent,
+               tag_root=tag_root, channel=channel)
 
 
 def batch(config: str) -> None:
@@ -468,7 +496,9 @@ def batch(config: str) -> None:
             reverse=spec.get("reverse", False),
             do_proofread=spec.get("proofread", False),
             model=spec.get("model", DEFAULT_MODEL),
-            per_lecture=spec.get("per_lecture", 14))
+            per_lecture=spec.get("per_lecture", 14),
+            tag_root=spec.get("tag_root", ""),
+            channel=spec.get("channel"))
 
 # --------------------------------------------------------------------------- #
 #  CLI
@@ -481,8 +511,14 @@ def main() -> None:
     common = lambda sp: (
         sp.add_argument("--deck", required=True, help="parent deck name, e.g. Ultrasound"),
         sp.add_argument("--tag-ns", required=True, help="tag namespace, e.g. Ultrasound"),
+        sp.add_argument("--tag-root", default="",
+                        help='optional prefix for every tag, e.g. "MyCourse::Physics" -> '
+                             '"#MyCourse::Physics::<tag-ns>::..." (default: no prefix)'),
         sp.add_argument("--section-prefix", default=None),
         sp.add_argument("--source", default=None, help='e.g. "Ultrasound Physics Course #{num}"'),
+        sp.add_argument("--channel", default=None,
+                        help="attribution shown in each card's Source field; "
+                             "auto-detected from the playlist's channel if omitted"),
         sp.add_argument("--model", default=DEFAULT_MODEL),
         sp.add_argument("--per-lecture", type=int, default=14),
         sp.add_argument("--reverse", action="store_true", help="playlist is in reverse course order"),
@@ -504,7 +540,12 @@ def main() -> None:
 
     b = sub.add_parser("build"); b.add_argument("cards_json")
     b.add_argument("--tag-ns", required=True)
+    b.add_argument("--tag-root", default="",
+                    help='optional prefix for every tag, e.g. "MyCourse::Physics"')
     b.add_argument("--source", required=True)
+    b.add_argument("--channel", default=None,
+                    help="attribution for the Source field; defaults to the channel "
+                         "name recorded in cards.json by the cards step")
     b.add_argument("--num-field", default="n", choices=["n", "lesson"])
     b.add_argument("--out-dir", default=".")
 
@@ -516,7 +557,8 @@ def main() -> None:
             a.section_prefix or f"{a.deck} Physics",
             a.source or f"{a.deck} #{{num}}",
             reverse=a.reverse, do_proofread=a.proofread, model=a.model,
-            per_lecture=a.per_lecture, skip_download=a.skip_download)
+            per_lecture=a.per_lecture, skip_download=a.skip_download,
+            tag_root=a.tag_root, channel=a.channel)
     elif a.cmd == "download":
         download(a.playlist, Path(a.workdir).expanduser().resolve())
     elif a.cmd == "proofread":
@@ -525,10 +567,11 @@ def main() -> None:
         wd = Path(a.workdir).expanduser().resolve()
         generate_cards(wd, a.deck, a.section_prefix or f"{a.deck} Physics",
                        model=a.model, per_lecture=a.per_lecture, reverse=a.reverse,
-                       out_path=Path(a.out) if a.out else None)
+                       out_path=Path(a.out) if a.out else None, channel=a.channel)
     elif a.cmd == "build":
         build_apkg(Path(a.cards_json), a.tag_ns, a.source,
-                   num_field=a.num_field, out_dir=Path(a.out_dir))
+                   num_field=a.num_field, out_dir=Path(a.out_dir),
+                   tag_root=a.tag_root, channel=a.channel)
     elif a.cmd == "batch":
         batch(a.config)
 

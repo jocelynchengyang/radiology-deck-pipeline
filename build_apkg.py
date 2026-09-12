@@ -9,6 +9,12 @@ Usage:
 Args: json_path  parent_deck  section_prefix  tag_namespace  source_template  num_field
 (num_field is "n" or "lesson" — which JSON field fills {num} in the source line)
 
+Attribution in each card's Source field comes from the "channel" key in
+cards.json (written by radiology_deck_pipeline.py's `cards` step from the
+playlist's own channel name) if present, otherwise the Source field just
+quotes the lecture title. Tags are "#<tag_namespace>::<lecture>::<subchapter>"
+with no forced prefix — this script has no notion of a specific series.
+
 Requires: genanki
 """
 import json, re, sys, hashlib
@@ -28,9 +34,10 @@ def stable_id(s: str) -> int:
 
 def build(json_path, parent, section_prefix, tag_ns, source_tpl, num_field):
     data = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    channel = data.get("channel", "")
     model = genanki.Model(
         stable_id("model:" + parent),
-        f"{parent} Cloze (RadiologyTutorials)",
+        f"{parent} Cloze",
         model_type=genanki.Model.CLOZE,
         fields=[{"name": "Text"}, {"name": "Section"}, {"name": "Source"}, {"name": "Extra"}],
         templates=[{
@@ -61,12 +68,12 @@ hr#answer{border:none;border-top:1px solid #d5dae0;margin:14px 0}
         deck = genanki.Deck(base_deck_id + n, f"{parent}::{n:02d} {title}")
         section = d.get("section") or f"{section_prefix} - {title}"
         num = d[num_field]
-        source = (f'Radiology Tutorials — "{title}" '
-                  f'({source_tpl.format(num=num)}) · '
-                  f'https://www.youtube.com/watch?v={d["video_id"]}')
+        title_part = f'"{title}" ({source_tpl.format(num=num)})'
+        source = (f"{channel} — {title_part}" if channel else title_part) + \
+                 f' · https://www.youtube.com/watch?v={d["video_id"]}'
         lecture_slug = slug(title)
         for i, c in enumerate(d["cards"], 1):
-            tag = f"#RadiologyTutorials::Physics::{tag_ns}::{lecture_slug}::{slug(c['subchapter'])}"
+            tag = f"#{tag_ns}::{lecture_slug}::{slug(c['subchapter'])}"
             deck.add_note(genanki.Note(
                 model=model,
                 fields=[c["text"], section, source, ""],
