@@ -1,0 +1,43 @@
+[
+  {
+    "playlist": "https://www.youtube.com/playlist?list=PLWfaNqiSdtzUdb3fTjYFGtTf2yh96bDUR",
+    "workdir": "./ultrasound-physics-transcripts",
+    "deck": "Ultrasound",
+    "tag_ns": "Ultrasound",
+    "section_prefix": "Ultrasound Physics",
+    "source": "Ultrasound Physics Course #{num}",
+    "proofread": true,
+    "per_lecture": 14
+  },
+  {
+    "playlist": "https://www.youtube.com/playlist?list=PLWfaNqiSdtzVp5u79H_sFE4IPcjgwhKdQ",
+    "workdir": "./mri-physics-transcripts",
+    "deck": "MRI",
+    "tag_ns": "MRI",
+    "section_prefix": "MRI Physics",
+    "source": "MRI Physics Course #{num}",
+    "proofread": true,
+    "per_lecture": 14
+  },
+  {
+    "playlist": "https://www.youtube.com/playlist?list=PLWfaNqiSdtzUs4NrA0RcQqzSddU3bHfrA",
+    "workdir": "./xray-physics-transcripts",
+    "deck": "X-ray",
+    "tag_ns": "Xray",
+    "section_prefix": "X-ray Physics",
+    "source": "X-ray Physics Course #{num}",
+    "proofread": true,
+    "per_lecture": 13
+  },
+  {
+    "playlist": "https://www.youtube.com/playlist?list=PLWfaNqiSdtzW_muHrCkwJm9FyovAue-jN",
+    "workdir": "./ct-physics-transcripts",
+    "deck": "CT",
+    "tag_ns": "CT",
+    "section_prefix": "CT Physics",
+    "source": "CT Physics Course Lesson #{num}",
+    "reverse": true,
+    "proofread": true,
+    "per_lecture": 13
+  }
+]

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# generated artifacts if this repo is ever run in place — never commit content
+*.apkg
+*_cards.json
+*.txt
+*.txt.orig
+.playlist.json
+*-transcripts/
