@@ -18,7 +18,7 @@ playlist URL
 ## Requirements
 
 ```
-pip install yt-dlp anthropic genanki
+pip install -r requirements.txt
 export ANTHROPIC_API_KEY=sk-ant-api03-...
 ```
 
@@ -82,5 +82,4 @@ run it against a playlist you have the right to build study material from.
 
 ## License
 
-No license file yet — all rights reserved by default. Add one if you want
-others to reuse this.
+MIT — see [LICENSE](LICENSE).
